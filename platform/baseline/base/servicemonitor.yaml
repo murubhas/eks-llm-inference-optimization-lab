@@ -1,0 +1,20 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: llm-gpu-vllm-baseline
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: llm-gpu-vllm-baseline
+    app.kubernetes.io/component: model-server
+spec:
+  namespaceSelector:
+    matchNames:
+      - model-serving
+  selector:
+    matchLabels:
+      app: llm-gpu-vllm-baseline
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

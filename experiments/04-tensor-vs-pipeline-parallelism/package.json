@@ -1,0 +1,11 @@
+{
+  "name": "g7-inter-node-parallelism-diagram",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:diagram": "node build_parallelism_diagram.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.34.4"
+  }
+}

@@ -1,0 +1,89 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+configMapGenerator:
+  - name: inference-baseline-settings
+    namespace: model-serving
+    literals:
+      - image=REPLACE_WITH_VLLM_IMAGE
+      - modelPath=REPLACE_WITH_MODEL_PATH_UNDER_MODELS
+      - modelId=REPLACE_WITH_SERVED_MODEL_ID
+      - modelPvc=REPLACE_WITH_MODEL_PVC
+      - serviceAccount=REPLACE_WITH_SERVICE_ACCOUNT
+      - instanceType=g6e.12xlarge
+      - gpuWorkloadLabel=REPLACE_WITH_GPU_WORKLOAD_LABEL
+generatorOptions:
+  disableNameSuffixHash: true
+replacements:
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.image
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.containers.[name=vllm].image
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.modelPath
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.containers.[name=vllm].env.[name=MODEL_PATH].value
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.modelId
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.containers.[name=vllm].env.[name=SERVED_MODEL_NAME].value
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.modelPvc
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.volumes.[name=model-storage].persistentVolumeClaim.claimName
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.serviceAccount
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.serviceAccountName
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.instanceType
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.nodeSelector.[node.kubernetes.io/instance-type]
+  - source:
+      kind: ConfigMap
+      name: inference-baseline-settings
+      fieldPath: data.gpuWorkloadLabel
+    targets:
+      - select:
+          kind: Deployment
+          name: llm-gpu-vllm-baseline
+        fieldPaths:
+          - spec.template.spec.nodeSelector.workload
+          - spec.template.spec.tolerations.[key=workload].value

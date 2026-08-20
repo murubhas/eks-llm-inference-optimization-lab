@@ -1,0 +1,187 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen36-g7e-mig
+  namespace: model-serving
+  labels:
+    app: qwen36-g7e-mig
+    experiment: qwen36-g7e-full-vs-mig
+    topology: mig-2g-48gb
+spec:
+  replicas: 4
+  progressDeadlineSeconds: 1800
+  revisionHistoryLimit: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: qwen36-g7e-mig
+  template:
+    metadata:
+      labels:
+        app: qwen36-g7e-mig
+        experiment: qwen36-g7e-full-vs-mig
+        topology: mig-2g-48gb
+        llm-d.ai/model: qwen3.6-27b-vllm024
+        eks.amazonaws.com/pod-identity: enabled
+    spec:
+      serviceAccountName: model-artifact-reader
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        node.kubernetes.io/instance-type: g7e.2xlarge
+        workload: inference-g7e-2xlarge-mig
+        gpu-stack: gpu-operator
+        nvidia.com/mig.config: all-2g.48gb
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference-g7e-2xlarge-mig
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+          args:
+            - |
+              set -eu
+              python3 - <<'PY'
+              import json
+              import os
+              import sys
+              import vllm
+
+              root = "/models/qwen3.6-27b-fp8"
+              print("vLLM version:", getattr(vllm, "__version__", "unknown"))
+              config_path = os.path.join(root, "config.json")
+              if not os.path.exists(config_path):
+                  sys.exit(f"Model config missing: {config_path}")
+              with open(config_path, "r", encoding="utf-8") as handle:
+                  config = json.load(handle)
+              required = []
+              if config.get("model_type") == "gemma4":
+                  required = ["preprocessor_config.json", "processor_config.json"]
+              elif config.get("model_type") == "qwen3_5":
+                  required = ["preprocessor_config.json", "video_preprocessor_config.json"]
+              elif "vision_config" in config:
+                  required = ["preprocessor_config.json"]
+              missing = [name for name in required if not os.path.exists(os.path.join(root, name))]
+              if missing:
+                  sys.exit("Missing multimodal sidecars: " + ", ".join(missing))
+              PY
+              exec vllm serve /models/qwen3.6-27b-fp8 \
+                --max-model-len 8192 \
+                --tensor-parallel-size 1 \
+                --trust-remote-code \
+                --reasoning-parser qwen3 \
+                --enable-auto-tool-choice \
+                --tool-call-parser qwen3_coder \
+                --enable-prefix-caching \
+                --mamba-cache-mode align \
+                --enable-log-requests \
+                --enable-log-outputs \
+                --limit-mm-per-prompt '{"image": 1, "video": 0, "audio": 0}' \
+                --generation-config vllm \
+                --kv-cache-dtype fp8_e4m3 \
+                --async-scheduling \
+                --enable-chunked-prefill \
+                --mm-processor-cache-gb 1 \
+                --max-num-seqs 1 \
+                --max-num-batched-tokens 3135 \
+                --served-model-name qwen36-27b-all1000-fp8-g7e-benchmark \
+                --disable-access-log-for-endpoints /health,/metrics,/ping \
+                --gpu-memory-utilization 0.90 \
+                --port 8000
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 600
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          env:
+            - name: PYTHONHASHSEED
+              value: "123"
+            - name: OPTION_TRUST_REMOTE_CODE
+              value: "true"
+            - name: SAGEMAKER_CONTAINER_LOG_LEVEL
+              value: "20"
+            - name: SAGEMAKER_ENV
+              value: "1"
+            - name: TZ
+              value: UTC
+            - name: VLLM_LOGGING_LEVEL
+              value: INFO
+            - name: VLLM_LOG_STATS_INTERVAL
+              value: "10"
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/mig-2g.48gb: "1"
+            limits:
+              nvidia.com/mig-2g.48gb: "1"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-pvc
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qwen36-g7e-mig
+  namespace: model-serving
+  labels:
+    app: qwen36-g7e-mig
+    experiment: qwen36-g7e-full-vs-mig
+spec:
+  selector:
+    app: qwen36-g7e-mig
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: qwen36-g7e-mig
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app: qwen36-g7e-mig
+  namespaceSelector:
+    matchNames:
+      - model-serving
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

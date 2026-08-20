@@ -1,0 +1,15 @@
+# Use only when the GPU node image already provides a compatible NVIDIA driver
+# and container toolkit. Review the upstream chart values for your pinned chart.
+driver:
+  enabled: false
+toolkit:
+  enabled: false
+dcgm:
+  enabled: true
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+    additionalLabels:
+      release: kube-prometheus-stack

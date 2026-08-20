@@ -1,0 +1,34 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: qwen36-vllm-prometheus-scaler
+  namespace: model-serving
+spec:
+  scaleTargetRef:
+    name: qwen36-27b-fp8
+  minReplicaCount: 3
+  maxReplicaCount: 4
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 2400
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 300
+  triggers:
+    - type: prometheus
+      metricType: Value
+      metadata:
+        serverAddress: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+        metricName: qwen36_vllm_requests_waiting
+        threshold: "1"
+        query: |
+          sum(vllm:num_requests_waiting{namespace="model-serving",pod=~"qwen36-27b-fp8.*"})

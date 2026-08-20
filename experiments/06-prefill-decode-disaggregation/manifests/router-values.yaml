@@ -1,0 +1,125 @@
+## Temporary llm-d standalone router values for Qwen3.6 P/D smoke testing.
+##
+## Purpose:
+## - Keep the existing homogeneous llm-d router untouched.
+## - Route only to pods labeled llm-d.ai/model=qwen3.6-27b-pd-smoke.
+## - Enable P/D disaggregation plugins and Prometheus scraping.
+
+router:
+  epp:
+    replicas: 1
+    flags:
+      v: 2
+    pluginsConfigFile: "pd-config.yaml"
+    pluginsCustomConfig:
+      pd-config.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: disagg-headers-handler
+        - type: always-disagg-pd-decider
+        - type: disagg-profile-handler
+          parameters:
+            deciderPluginName: always-disagg-pd-decider
+        - type: prefill-filter
+        - type: decode-filter
+        - type: prefix-cache-scorer
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: active-request-scorer
+        schedulingProfiles:
+        - name: prefill
+          plugins:
+          - pluginRef: prefill-filter
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+        - name: decode
+          plugins:
+          - pluginRef: decode-filter
+          - pluginRef: active-request-scorer
+            weight: 2
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+    resources:
+      requests:
+        cpu: "100m"
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: role
+                  operator: In
+                  values:
+                    - observability-system
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: observability-system
+        effect: NoSchedule
+
+  inferencePool:
+    failureMode: "FailOpen"
+
+  modelServers:
+    protocol: http
+    matchLabels:
+      llm-d.ai/model: "qwen3.6-27b-pd-smoke"
+      llm-d.ai/guide: "llm-lab-qwen36-pd-smoke"
+
+  monitoring:
+    prometheus:
+      enabled: true
+      extraLabels:
+        release: kube-prometheus-stack
+      auth:
+        enabled: false
+
+  proxy:
+    configMap:
+      name: envoy-qwen-pd
+    presets:
+      envoy:
+        configMap:
+          name: envoy-qwen-pd
+    volumes:
+      - name: config
+        configMap:
+          name: envoy-qwen-pd
+          items:
+            - key: envoy.yaml
+              path: envoy.yaml
+    args:
+      - "--service-node"
+      - "envoy-sidecar"
+      - "--log-level"
+      - "warn"
+      - "--concurrency"
+      - "2"
+      - "--drain-strategy"
+      - "immediate"
+      - "--drain-time-s"
+      - "60"
+      - "-c"
+      - "/etc/envoy/envoy.yaml"
+    resources:
+      requests:
+        cpu: "100m"
+        memory: 256Mi
+      limits:
+        cpu: "500m"
+        memory: 1Gi
+
+  extraServicePorts:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8081

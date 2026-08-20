@@ -1,0 +1,69 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiperf-k8s-service-sustained
+  namespace: model-serving
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: aiperf-k8s-service-sustained
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        role: inference-system
+      containers:
+        - name: aiperf
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PIP_ROOT_USER_ACTION
+              value: ignore
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          volumeMounts:
+            - name: artifacts
+              mountPath: /artifacts
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              set -eu
+              python -m pip install --no-cache-dir aiperf==0.11.0
+              aiperf --version
+              # Synthetic saturation workload: ignore_eos=true forces generation to
+              # max_tokens ceiling every request. NOT representative of user behavior.
+              # Closed-loop: 12 requests held in flight (no --request-rate).
+              aiperf profile \
+                --model qwen36-27b-all1000-fp8 \
+                --url http://qwen36-27b-fp8.model-serving.svc.cluster.local \
+                --endpoint-type chat \
+                --streaming \
+                --concurrency 12 \
+                --benchmark-duration 1500 \
+                --benchmark-grace-period 30 \
+                --isl 256 \
+                --osl 128 \
+                --tokenizer builtin \
+                --use-legacy-max-tokens \
+                --extra-inputs '{"chat_template_kwargs":{"enable_thinking":false},"ignore_eos":true}' \
+                --connection-reuse-strategy never \
+                --no-gpu-telemetry \
+                --no-server-metrics \
+                --ui-type simple \
+                -v \
+                --artifact-dir /artifacts/k8s-service-d1500
+              echo "AIPERF_ARTIFACTS_BASE64_BEGIN"
+              tar -C /artifacts -czf - . | base64
+              echo "AIPERF_ARTIFACTS_BASE64_END"
+      volumes:
+        - name: artifacts
+          emptyDir: {}

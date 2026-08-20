@@ -1,0 +1,5 @@
+# Copy to private-identifiers.local. Put one literal value per line.
+YOUR_12_DIGIT_AWS_ACCOUNT_ID
+YOUR_GITHUB_USERNAME
+/absolute/path/to/your/home
+YOUR_PRIVATE_AWS_PROFILE_PREFIX

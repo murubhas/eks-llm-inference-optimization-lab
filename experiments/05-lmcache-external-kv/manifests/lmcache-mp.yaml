@@ -1,0 +1,228 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-lab-qwen36-vllm024-lmcache-canary
+  namespace: model-serving
+  labels:
+    app: llm-lab-qwen36-vllm024-lmcache-canary
+    experiment: vllm024-lmcache-canary
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 1800
+  selector:
+    matchLabels:
+      app: llm-lab-qwen36-vllm024-lmcache-canary
+  template:
+    metadata:
+      labels:
+        app: llm-lab-qwen36-vllm024-lmcache-canary
+        experiment: vllm024-lmcache-canary
+        eks.amazonaws.com/pod-identity: enabled
+    spec:
+      serviceAccountName: model-artifact-reader
+      nodeSelector:
+        node.kubernetes.io/instance-type: g6e.12xlarge
+        topology.k8s.aws/zone-id: use2-az3
+        workload: inference-g6e-12xlarge
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: workload
+          operator: Equal
+          value: inference-g6e-12xlarge
+          effect: NoSchedule
+      containers:
+        - name: lmcache
+          image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+            - |
+              set -eu
+              python3 - <<'PY'
+              import lmcache
+              print("lmcache sidecar version", getattr(lmcache, "__version__", "unknown"))
+              PY
+              exec lmcache server \
+                --host 0.0.0.0 \
+                --port 5555 \
+                --l1-size-gb 8 \
+                --eviction-policy LRU \
+                --chunk-size 1568
+          ports:
+            - name: lmcache-zmq
+              containerPort: 5555
+            - name: lmcache-http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: 5555
+            periodSeconds: 5
+            failureThreshold: 12
+          resources:
+            requests:
+              cpu: "1"
+              memory: 16Gi
+            limits:
+              memory: 32Gi
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+        - name: vllm
+          image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+          args:
+            - |
+              set -eu
+              python3 - <<'PY'
+              import json
+              import os
+              import socket
+              import sys
+              import time
+
+              import lmcache
+              import vllm
+              import lmcache.integration.vllm.lmcache_mp_connector as connector
+
+              print("vllm canary version", getattr(vllm, "__version__", "unknown"))
+              print("lmcache canary version", getattr(lmcache, "__version__", "unknown"))
+              print("lmcache connector import ok", connector.__name__)
+
+              deadline = time.time() + 120
+              while time.time() < deadline:
+                  try:
+                      with socket.create_connection(("127.0.0.1", 5555), timeout=2):
+                          print("LMCache server is reachable on 127.0.0.1:5555")
+                          break
+                  except OSError:
+                      time.sleep(2)
+              else:
+                  raise SystemExit("LMCache server did not become reachable")
+
+              root = "/models/qwen3.6-27b-fp8"
+              config_path = os.path.join(root, "config.json")
+              if not os.path.exists(config_path):
+                  sys.exit(f"Model config missing: {config_path}")
+
+              with open(config_path, "r", encoding="utf-8") as handle:
+                  config = json.load(handle)
+
+              model_type = config.get("model_type")
+              required = []
+              if model_type == "gemma4":
+                  required = ["preprocessor_config.json", "processor_config.json"]
+              elif model_type == "qwen3_5":
+                  required = ["preprocessor_config.json", "video_preprocessor_config.json"]
+              elif "vision_config" in config:
+                  required = ["preprocessor_config.json"]
+
+              missing = [name for name in required if not os.path.exists(os.path.join(root, name))]
+              if missing:
+                  for name in missing:
+                      print(f"Missing required multimodal sidecar: {os.path.join(root, name)}", file=sys.stderr)
+                  sys.exit(42)
+              if required:
+                  print("Validated multimodal sidecars: " + ", ".join(required))
+              PY
+              exec vllm serve /models/qwen3.6-27b-fp8 \
+                --max-model-len 8192 \
+                --tensor-parallel-size 1 \
+                --trust-remote-code \
+                --reasoning-parser qwen3 \
+                --enable-auto-tool-choice \
+                --tool-call-parser qwen3_coder \
+                --enable-prefix-caching \
+                --mamba-cache-mode align \
+                --enable-log-requests \
+                --enable-log-outputs \
+                --limit-mm-per-prompt '{"image": 1, "video": 0, "audio": 0}' \
+                --generation-config vllm \
+                --kv-cache-dtype fp8_e4m3 \
+                --async-scheduling \
+                --enable-chunked-prefill \
+                --mm-processor-cache-gb 1 \
+                --max-num-seqs 1 \
+                --max-num-batched-tokens 3135 \
+                --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"tcp://localhost","lmcache.mp.port":5555}}' \
+                --served-model-name qwen36-27b-all1000-fp8-vllm024-lmcache-canary \
+                --disable-access-log-for-endpoints /health,/metrics,/ping \
+                --gpu-memory-utilization 0.90 \
+                --port 8000
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 600
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          env:
+            - name: PYTHONHASHSEED
+              value: "123"
+            - name: OPTION_TRUST_REMOTE_CODE
+              value: "true"
+            - name: SAGEMAKER_CONTAINER_LOG_LEVEL
+              value: "20"
+            - name: SAGEMAKER_ENV
+              value: "1"
+            - name: TZ
+              value: UTC
+            - name: VLLM_LOGGING_LEVEL
+              value: INFO
+            - name: VLLM_LOG_STATS_INTERVAL
+              value: "10"
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-pvc
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-lab-qwen36-vllm024-lmcache-canary
+  namespace: model-serving
+  labels:
+    app: llm-lab-qwen36-vllm024-lmcache-canary
+    experiment: vllm024-lmcache-canary
+spec:
+  selector:
+    app: llm-lab-qwen36-vllm024-lmcache-canary
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: lmcache-http
+      port: 8080
+      targetPort: lmcache-http

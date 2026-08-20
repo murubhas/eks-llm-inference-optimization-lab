@@ -1,0 +1,45 @@
+# Local configuration and credentials
+config/environment.local
+config/private-identifiers.local
+.env
+.env.*
+!.env.example
+
+# Operator-only provenance map
+.operator-private/
+
+# Terraform state and saved plans
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/*.plan.txt
+
+# Benchmark and generated artifacts
+artifacts/
+results/
+output/
+outputs/
+*.log
+*.csv
+*.parquet
+
+# Models, adapters, checkpoints, and archives
+models/
+checkpoints/
+adapters/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.tar
+*.tar.gz
+
+# Language and editor caches
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+node_modules/
+.DS_Store
+~$*

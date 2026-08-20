@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gpu-vllm-baseline
+  namespace: model-serving
+  labels:
+    app: llm-gpu-vllm-baseline
+    app.kubernetes.io/name: llm-gpu-vllm-baseline
+    app.kubernetes.io/component: model-server
+spec:
+  selector:
+    app: llm-gpu-vllm-baseline
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

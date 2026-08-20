@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - runner.yaml
+configMapGenerator:
+  - name: aiperf-runner-files
+    namespace: model-serving
+    files:
+      - run-profile.sh
+      - profiles/smoke.env
+      - profiles/distribution.env
+      - profiles/prefix-reuse.env
+generatorOptions:
+  disableNameSuffixHash: true

@@ -1,0 +1,331 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-lab-qwen36-pd-prefill
+  namespace: model-serving
+  labels:
+    app: llm-lab-qwen36-pd-prefill
+    llm-d.ai/model: qwen3.6-27b-pd-smoke
+    llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+    llm-d.ai/role: prefill
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-lab-qwen36-pd-prefill
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: llm-lab-qwen36-pd-prefill
+        llm-d.ai/model: qwen3.6-27b-pd-smoke
+        llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+        llm-d.ai/role: prefill
+    spec:
+      serviceAccountName: model-artifact-reader
+      nodeSelector:
+        node.kubernetes.io/instance-type: g6e.12xlarge
+        topology.k8s.aws/zone-id: use2-az3
+        workload: inference-g6e-12xlarge
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference-g6e-12xlarge
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: modelserver
+          image: vllm/vllm-openai:v0.24.0-x86_64-cu129
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+          args:
+            - |
+              set -eu
+              exec vllm serve /models/qwen3.6-27b-fp8 \
+                --max-model-len 8192 \
+                --tensor-parallel-size 1 \
+                --trust-remote-code \
+                --reasoning-parser qwen3 \
+                --enable-prefix-caching \
+                --generation-config vllm \
+                --kv-cache-dtype fp8_e4m3 \
+                --enable-chunked-prefill \
+                --block-size 128 \
+                --no-disable-hybrid-kv-cache-manager \
+                --max-num-seqs 1 \
+                --max-num-batched-tokens 8192 \
+                --served-model-name qwen36-27b-all1000-fp8 \
+                --disable-access-log-for-endpoints /health,/metrics,/ping \
+                --gpu-memory-utilization 0.90 \
+                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail"}' \
+                --port 8000
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5600"
+            - name: UCX_MODULE_DIR
+              value: /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/ucx
+            - name: VLLM_SSM_CONV_STATE_LAYOUT
+              value: DS
+            - name: VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+              value: "120"
+            - name: VLLM_LOGGING_LEVEL
+              value: INFO
+            - name: VLLM_LOG_STATS_INTERVAL
+              value: "10"
+            - name: TZ
+              value: UTC
+          ports:
+            - name: modelserver
+              containerPort: 8000
+              protocol: TCP
+            - name: nixl
+              containerPort: 5600
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 600
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - mountPath: /models
+              name: model-storage
+              readOnly: true
+            - mountPath: /dev/shm
+              name: shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-pvc
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-lab-qwen36-pd-decode
+  namespace: model-serving
+  labels:
+    app: llm-lab-qwen36-pd-decode
+    llm-d.ai/model: qwen3.6-27b-pd-smoke
+    llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+    llm-d.ai/role: decode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-lab-qwen36-pd-decode
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: llm-lab-qwen36-pd-decode
+        llm-d.ai/model: qwen3.6-27b-pd-smoke
+        llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+        llm-d.ai/role: decode
+    spec:
+      serviceAccountName: model-artifact-reader
+      nodeSelector:
+        node.kubernetes.io/instance-type: g6e.12xlarge
+        topology.k8s.aws/zone-id: use2-az3
+        workload: inference-g6e-12xlarge
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: inference-g6e-12xlarge
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        - name: routing-proxy
+          image: ghcr.io/llm-d/llm-d-router-disagg-sidecar:v0.9.0
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          args:
+            - --port=8000
+            - --vllm-port=8200
+            - --kv-connector=nixlv2
+            - --zap-log-level=1
+            - --secure-proxy=false
+          ports:
+            - name: sidecar
+              containerPort: 8000
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+      containers:
+        - name: modelserver
+          image: vllm/vllm-openai:v0.24.0-x86_64-cu129
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -lc
+          args:
+            - |
+              set -eu
+              exec vllm serve /models/qwen3.6-27b-fp8 \
+                --max-model-len 8192 \
+                --tensor-parallel-size 1 \
+                --trust-remote-code \
+                --reasoning-parser qwen3 \
+                --enable-prefix-caching \
+                --generation-config vllm \
+                --kv-cache-dtype fp8_e4m3 \
+                --enable-chunked-prefill \
+                --block-size 128 \
+                --no-disable-hybrid-kv-cache-manager \
+                --max-num-seqs 1 \
+                --max-num-batched-tokens 8192 \
+                --served-model-name qwen36-27b-all1000-fp8 \
+                --disable-access-log-for-endpoints /health,/metrics,/ping \
+                --gpu-memory-utilization 0.90 \
+                --kv-transfer-config '{"kv_connector":"NixlConnector","kv_role":"kv_both","kv_load_failure_policy":"fail"}' \
+                --port 8200
+          env:
+            - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: VLLM_NIXL_SIDE_CHANNEL_PORT
+              value: "5600"
+            - name: UCX_MODULE_DIR
+              value: /usr/local/lib/python3.12/dist-packages/nixl_cu12.libs/ucx
+            - name: VLLM_SSM_CONV_STATE_LAYOUT
+              value: DS
+            - name: VLLM_HTTP_TIMEOUT_KEEP_ALIVE
+              value: "120"
+            - name: VLLM_LOGGING_LEVEL
+              value: INFO
+            - name: VLLM_LOG_STATS_INTERVAL
+              value: "10"
+            - name: TZ
+              value: UTC
+          ports:
+            - name: modelserver
+              containerPort: 8200
+              protocol: TCP
+            - name: nixl
+              containerPort: 5600
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          startupProbe:
+            httpGet:
+              path: /v1/models
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 600
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: modelserver
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - mountPath: /models
+              name: model-storage
+              readOnly: true
+            - mountPath: /dev/shm
+              name: shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-pvc
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: llm-lab-qwen36-pd-prefill
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+    llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+    llm-d.ai/role: prefill
+spec:
+  selector:
+    matchLabels:
+      llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+      llm-d.ai/role: prefill
+  podMetricsEndpoints:
+    - port: modelserver
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: llm-lab-qwen36-pd-decode
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+    llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+    llm-d.ai/role: decode
+spec:
+  selector:
+    matchLabels:
+      llm-d.ai/guide: llm-lab-qwen36-pd-smoke
+      llm-d.ai/role: decode
+  podMetricsEndpoints:
+    - port: modelserver
+      path: /metrics
+      interval: 15s

@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-a-vllm
+  namespace: model-serving
+  labels:
+    app: runtime-a-vllm
+    experiment: runtime-comparison
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 7200
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: runtime-a-vllm
+  template:
+    metadata:
+      labels:
+        app: runtime-a-vllm
+        experiment: runtime-comparison
+        runtime: vllm
+    spec:
+      hostIPC: true
+      serviceAccountName: model-artifact-reader
+      nodeSelector:
+        node.kubernetes.io/instance-type: p5.48xlarge
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          # Pin this public starting point to a digest validated with your model.
+          # The measured control used a private 0.24.0-derived image.
+          image: vllm/vllm-openai:v0.24.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+          args:
+            - |
+              set -euo pipefail
+              python3 - <<'PY'
+              import json
+              import os
+              import vllm
+
+              root = "/models/qwen3.6-27b-bf16"
+              config = json.load(open(os.path.join(root, "config.json"), encoding="utf-8"))
+              print("vLLM version:", getattr(vllm, "__version__", "unknown"))
+              print("Model type:", config.get("model_type"))
+              PY
+              exec vllm serve /models/qwen3.6-27b-bf16 \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --tensor-parallel-size 1 \
+                --max-model-len 8192 \
+                --max-num-seqs 8 \
+                --max-num-batched-tokens 8192 \
+                --gpu-memory-utilization 0.90 \
+                --trust-remote-code \
+                --reasoning-parser qwen3 \
+                --enable-prefix-caching \
+                --mamba-cache-mode align \
+                --async-scheduling \
+                --enable-chunked-prefill \
+                --limit-mm-per-prompt '{"image":1,"video":0,"audio":0}' \
+                --mm-processor-cache-gb 1 \
+                --generation-config vllm \
+                --served-model-name qwen36-27b-bf16-vllm-benchmark \
+                --disable-access-log-for-endpoints /health,/metrics,/ping
+          env:
+            - name: HF_HOME
+              value: /tmp/huggingface
+            - name: VLLM_LOGGING_LEVEL
+              value: INFO
+            - name: VLLM_LOG_STATS_INTERVAL
+              value: "10"
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 720
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "8"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-storage
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-a-vllm
+  namespace: model-serving
+  labels:
+    app: runtime-a-vllm
+    experiment: runtime-comparison
+spec:
+  selector:
+    app: runtime-a-vllm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: runtime-a-vllm
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - model-serving
+  selector:
+    matchLabels:
+      app: runtime-a-vllm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

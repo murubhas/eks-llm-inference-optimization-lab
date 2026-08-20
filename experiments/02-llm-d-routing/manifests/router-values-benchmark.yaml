@@ -1,0 +1,96 @@
+## Stage 1 benchmark-sized llm-d standalone router for llm-lab-serve.
+## Layer on top of /tmp/llm-d/guides/recipes/router/base.values.yaml.
+##
+## This keeps the same standalone router/EPP behavior proven in Phase 1, but
+## moves the router pod to a dedicated CPU node and restores upstream-sized
+## EPP/Envoy resources for a cleaner Kubernetes Service vs llm-d comparison.
+
+router:
+  epp:
+    replicas: 1
+    flags:
+      v: 2
+    pluginsConfigFile: "optimized-baseline-plugins.yaml"
+    pluginsCustomConfig:
+      optimized-baseline-plugins.yaml: |
+        apiVersion: llm-d.ai/v1alpha1
+        kind: EndpointPickerConfig
+        plugins:
+        - type: queue-scorer
+        - type: kv-cache-utilization-scorer
+        - type: prefix-cache-scorer
+        - type: no-hit-lru-scorer
+        schedulingProfiles:
+        - name: default
+          plugins:
+          - pluginRef: queue-scorer
+            weight: 2
+          - pluginRef: kv-cache-utilization-scorer
+            weight: 2
+          - pluginRef: prefix-cache-scorer
+            weight: 3
+          - pluginRef: no-hit-lru-scorer
+            weight: 2
+    resources:
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: workload
+                  operator: In
+                  values:
+                    - llm-d-router
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: llm-d-router
+        effect: NoSchedule
+
+  inferencePool:
+    failureMode: "FailOpen"
+
+  modelServers:
+    protocol: http
+    matchLabels:
+      llm-d.ai/model: "qwen3.6-27b"
+
+  monitoring:
+    prometheus:
+      enabled: true
+      extraLabels:
+        release: kube-prometheus-stack
+      auth:
+        enabled: false
+
+  proxy:
+    args:
+      - "--service-node"
+      - "envoy-sidecar"
+      - "--log-level"
+      - "warn"
+      - "--concurrency"
+      - "8"
+      - "--drain-strategy"
+      - "immediate"
+      - "--drain-time-s"
+      - "60"
+      - "-c"
+      - "/etc/envoy/envoy.yaml"
+    resources:
+      requests:
+        cpu: "4"
+        memory: 8Gi
+      limits:
+        memory: 16Gi
+
+  extraServicePorts:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8081

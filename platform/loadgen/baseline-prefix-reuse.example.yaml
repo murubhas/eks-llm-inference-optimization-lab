@@ -1,0 +1,66 @@
+schema_version: 1
+status: sanitized_reference_result
+experiment:
+  module: platform/baseline
+  hypothesis: Measure the Kubernetes Service baseline with a long shared prefix.
+
+environment:
+  instance_type: g6e.12xlarge
+  active_node_count: 1
+  gpu_type: NVIDIA L40S
+  gpu_count: 4
+
+serving:
+  model_family: Qwen3.6 27B dense FP8
+  image_version: vLLM 0.24.0 compatible image
+  replicas: 4
+  tensor_parallel_size: 1
+  entrypoint: kubernetes-service
+  feature_flags:
+    prefix_caching: true
+    lmcache: false
+    mtp: false
+    pd_disaggregation: false
+
+load:
+  tool: aiperf
+  version: 0.10.0
+  request_count: 100
+  concurrency: 8
+  request_rate: 1.0
+  arrival_pattern: constant
+  synthetic_input_tokens: 512
+  shared_prefix_tokens: 4096
+  requested_output_tokens: 128
+  streaming: true
+  connection_reuse: never
+  thinking: disabled
+  ignore_eos: false
+
+results:
+  completed_requests: 100
+  api_errors: 0
+  cancelled: false
+  benchmark_duration_seconds: 122.247
+  observed_average_input_tokens: 4608.85
+  observed_average_output_tokens: 55.64
+  natural_eos_length_mismatches: 72
+  request_throughput_per_second: 0.8180
+  output_token_throughput_per_second: 45.5143
+  average_e2e_latency_ms: 7164.11
+  p95_e2e_latency_ms: 17268.29
+  p99_e2e_latency_ms: 19834.28
+  average_ttft_ms: 4584.06
+  p99_ttft_ms: 18612.14
+  average_time_to_second_token_ms: 46.05
+  p99_time_to_second_token_ms: 46.63
+  average_inter_token_latency_ms: 47.70
+  p99_inter_token_latency_ms: 62.38
+
+notes:
+  limitations: >-
+    This is one sanitized observed run, not a general performance claim. Natural
+    EOS was preserved, so requested OSL is a cap rather than a guaranteed length.
+  conclusion: >-
+    The record demonstrates the result schema and fixed workload contract. New
+    environments must produce their own measured baseline.

@@ -1,0 +1,473 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: qwen36-g7-tp2-a-master
+      namespace: model-serving
+      labels:
+        app: qwen36-g7-tp2
+        replica-group: a
+        component: master
+    spec:
+      clusterIP: None
+      publishNotReadyAddresses: true
+      selector:
+        app: qwen36-g7-tp2
+        replica-group: a
+        role: head
+      ports:
+        - name: master
+          port: 29500
+          targetPort: 29500
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: qwen36-g7-tp2-b-master
+      namespace: model-serving
+      labels:
+        app: qwen36-g7-tp2
+        replica-group: b
+        component: master
+    spec:
+      clusterIP: None
+      publishNotReadyAddresses: true
+      selector:
+        app: qwen36-g7-tp2
+        replica-group: b
+        role: head
+      ports:
+        - name: master
+          port: 29500
+          targetPort: 29500
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qwen36-g7-tp2-a-r0
+      namespace: model-serving
+      labels: &tp2-a-r0-labels
+        app: qwen36-g7-tp2
+        experiment: qwen36-g7-tp-comparison
+        topology: tp2
+        replica-group: a
+        role: head
+        rank: "0"
+    spec:
+      replicas: 1
+      progressDeadlineSeconds: 3600
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels: *tp2-a-r0-labels
+      template:
+        metadata:
+          labels: *tp2-a-r0-labels
+        spec: &tp2-pod-spec
+          serviceAccountName: model-artifact-reader
+          terminationGracePeriodSeconds: 60
+          nodeSelector:
+            node.kubernetes.io/instance-type: g7.2xlarge
+            workload: inference-g7-2xlarge-tp
+            gpu-stack: gpu-operator
+            experiment: tensor-parallel
+          tolerations:
+            - key: workload
+              operator: Equal
+              value: inference-g7-2xlarge-tp
+              effect: NoSchedule
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchExpressions:
+                      - key: experiment
+                        operator: In
+                        values: [qwen36-g7-tp-comparison]
+                      - key: topology
+                        operator: In
+                        values: [tp2]
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: vllm
+              image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+              imagePullPolicy: IfNotPresent
+              command: [/bin/bash, /opt/g7-tp/launch.sh]
+              env: &tp2-a-r0-env
+                - name: TP_SIZE
+                  value: "2"
+                - name: NNODES
+                  value: "2"
+                - name: NODE_RANK
+                  value: "0"
+                - name: HEADLESS
+                  value: "false"
+                - name: MASTER_ADDR
+                  value: qwen36-g7-tp2-a-master.model-serving.svc.cluster.local
+                - name: MASTER_PORT
+                  value: "29500"
+                - name: VLLM_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: GLOO_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+                - name: NCCL_SOCKET_FAMILY
+                  value: AF_INET
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: VLLM_LOGGING_LEVEL
+                  value: INFO
+                - name: VLLM_LOG_STATS_INTERVAL
+                  value: "10"
+                - name: PYTHONHASHSEED
+                  value: "123"
+              ports:
+                - name: http
+                  containerPort: 8000
+                - name: master
+                  containerPort: 29500
+              startupProbe:
+                httpGet:
+                  path: /health
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 600
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 3
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 20Gi
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: launcher
+                  mountPath: /opt/g7-tp
+                  readOnly: true
+                - name: model-storage
+                  mountPath: /models
+                  readOnly: true
+                - name: shm
+                  mountPath: /dev/shm
+          volumes:
+            - name: launcher
+              configMap:
+                name: qwen36-g7-tp-launcher
+                defaultMode: 0555
+            - name: model-storage
+              persistentVolumeClaim:
+                claimName: model-pvc
+            - name: shm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 16Gi
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qwen36-g7-tp2-a-r1
+      namespace: model-serving
+      labels: &tp2-a-r1-labels
+        app: qwen36-g7-tp2
+        experiment: qwen36-g7-tp-comparison
+        topology: tp2
+        replica-group: a
+        role: worker
+        rank: "1"
+    spec:
+      replicas: 1
+      progressDeadlineSeconds: 3600
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels: *tp2-a-r1-labels
+      template:
+        metadata:
+          labels: *tp2-a-r1-labels
+        spec:
+          <<: *tp2-pod-spec
+          containers:
+            - name: vllm
+              image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+              imagePullPolicy: IfNotPresent
+              command: [/bin/bash, /opt/g7-tp/launch.sh]
+              env:
+                - name: TP_SIZE
+                  value: "2"
+                - name: NNODES
+                  value: "2"
+                - name: NODE_RANK
+                  value: "1"
+                - name: HEADLESS
+                  value: "true"
+                - name: MASTER_ADDR
+                  value: qwen36-g7-tp2-a-master.model-serving.svc.cluster.local
+                - name: MASTER_PORT
+                  value: "29500"
+                - name: VLLM_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: GLOO_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+                - name: NCCL_SOCKET_FAMILY
+                  value: AF_INET
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: VLLM_LOGGING_LEVEL
+                  value: INFO
+                - name: VLLM_LOG_STATS_INTERVAL
+                  value: "10"
+                - name: PYTHONHASHSEED
+                  value: "123"
+              ports:
+                - name: master
+                  containerPort: 29500
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 20Gi
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: launcher
+                  mountPath: /opt/g7-tp
+                  readOnly: true
+                - name: model-storage
+                  mountPath: /models
+                  readOnly: true
+                - name: shm
+                  mountPath: /dev/shm
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qwen36-g7-tp2-b-r0
+      namespace: model-serving
+      labels: &tp2-b-r0-labels
+        app: qwen36-g7-tp2
+        experiment: qwen36-g7-tp-comparison
+        topology: tp2
+        replica-group: b
+        role: head
+        rank: "0"
+    spec:
+      replicas: 1
+      progressDeadlineSeconds: 3600
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels: *tp2-b-r0-labels
+      template:
+        metadata:
+          labels: *tp2-b-r0-labels
+        spec:
+          <<: *tp2-pod-spec
+          containers:
+            - name: vllm
+              image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+              imagePullPolicy: IfNotPresent
+              command: [/bin/bash, /opt/g7-tp/launch.sh]
+              env:
+                - name: TP_SIZE
+                  value: "2"
+                - name: NNODES
+                  value: "2"
+                - name: NODE_RANK
+                  value: "0"
+                - name: HEADLESS
+                  value: "false"
+                - name: MASTER_ADDR
+                  value: qwen36-g7-tp2-b-master.model-serving.svc.cluster.local
+                - name: MASTER_PORT
+                  value: "29500"
+                - name: VLLM_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: GLOO_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+                - name: NCCL_SOCKET_FAMILY
+                  value: AF_INET
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: VLLM_LOGGING_LEVEL
+                  value: INFO
+                - name: VLLM_LOG_STATS_INTERVAL
+                  value: "10"
+                - name: PYTHONHASHSEED
+                  value: "123"
+              ports:
+                - name: http
+                  containerPort: 8000
+                - name: master
+                  containerPort: 29500
+              startupProbe:
+                httpGet:
+                  path: /health
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 600
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 3
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 20Gi
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: launcher
+                  mountPath: /opt/g7-tp
+                  readOnly: true
+                - name: model-storage
+                  mountPath: /models
+                  readOnly: true
+                - name: shm
+                  mountPath: /dev/shm
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: qwen36-g7-tp2-b-r1
+      namespace: model-serving
+      labels: &tp2-b-r1-labels
+        app: qwen36-g7-tp2
+        experiment: qwen36-g7-tp-comparison
+        topology: tp2
+        replica-group: b
+        role: worker
+        rank: "1"
+    spec:
+      replicas: 1
+      progressDeadlineSeconds: 3600
+      strategy:
+        type: Recreate
+      selector:
+        matchLabels: *tp2-b-r1-labels
+      template:
+        metadata:
+          labels: *tp2-b-r1-labels
+        spec:
+          <<: *tp2-pod-spec
+          containers:
+            - name: vllm
+              image: YOUR_REGISTRY.example.com/vllm-openai:vllm-0.24.0-lmcache
+              imagePullPolicy: IfNotPresent
+              command: [/bin/bash, /opt/g7-tp/launch.sh]
+              env:
+                - name: TP_SIZE
+                  value: "2"
+                - name: NNODES
+                  value: "2"
+                - name: NODE_RANK
+                  value: "1"
+                - name: HEADLESS
+                  value: "true"
+                - name: MASTER_ADDR
+                  value: qwen36-g7-tp2-b-master.model-serving.svc.cluster.local
+                - name: MASTER_PORT
+                  value: "29500"
+                - name: VLLM_HOST_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: NCCL_SOCKET_IFNAME
+                  value: eth0
+                - name: GLOO_SOCKET_IFNAME
+                  value: eth0
+                - name: NCCL_IB_DISABLE
+                  value: "1"
+                - name: NCCL_SOCKET_FAMILY
+                  value: AF_INET
+                - name: NCCL_DEBUG
+                  value: INFO
+                - name: VLLM_LOGGING_LEVEL
+                  value: INFO
+                - name: VLLM_LOG_STATS_INTERVAL
+                  value: "10"
+                - name: PYTHONHASHSEED
+                  value: "123"
+              ports:
+                - name: master
+                  containerPort: 29500
+              resources:
+                requests:
+                  cpu: "2"
+                  memory: 20Gi
+                  nvidia.com/gpu: "1"
+                limits:
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: launcher
+                  mountPath: /opt/g7-tp
+                  readOnly: true
+                - name: model-storage
+                  mountPath: /models
+                  readOnly: true
+                - name: shm
+                  mountPath: /dev/shm
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: qwen36-g7-tp2
+      namespace: model-serving
+      labels:
+        app: qwen36-g7-tp2
+        component: api
+        experiment: qwen36-g7-tp-comparison
+    spec:
+      selector:
+        app: qwen36-g7-tp2
+        topology: tp2
+        role: head
+      ports:
+        - name: http
+          port: 80
+          targetPort: http
+  - apiVersion: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    metadata:
+      name: qwen36-g7-tp2
+      namespace: model-serving
+      labels:
+        release: kube-prometheus-stack
+    spec:
+      selector:
+        matchLabels:
+          app: qwen36-g7-tp2
+          component: api
+      namespaceSelector:
+        matchNames: [model-serving]
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 15s

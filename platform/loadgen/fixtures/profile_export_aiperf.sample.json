@@ -1,0 +1,101 @@
+{
+  "schema_version": "1.3",
+  "aiperf_version": "0.10.0",
+  "benchmark_id": "sanitized-sample",
+  "start_time": "2026-01-01T00:00:00Z",
+  "end_time": "2026-01-01T00:02:02Z",
+  "request_throughput": {
+    "unit": "requests/sec",
+    "avg": 0.8180135
+  },
+  "output_token_throughput": {
+    "unit": "tokens/sec",
+    "avg": 45.5142725
+  },
+  "request_latency": {
+    "unit": "ms",
+    "avg": 7164.11038,
+    "p95": 17268.29463,
+    "p99": 19834.28466,
+    "count": 100
+  },
+  "time_to_first_token": {
+    "unit": "ms",
+    "avg": 4584.05991,
+    "p99": 18612.13741
+  },
+  "time_to_second_token": {
+    "unit": "ms",
+    "avg": 46.04769,
+    "p99": 46.63478
+  },
+  "inter_token_latency": {
+    "unit": "ms",
+    "avg": 47.69823,
+    "p99": 62.37733
+  },
+  "benchmark_duration": {
+    "unit": "sec",
+    "avg": 122.24737
+  },
+  "input_sequence_length": {
+    "unit": "tokens",
+    "avg": 4608.85
+  },
+  "output_sequence_length": {
+    "unit": "tokens",
+    "avg": 55.64
+  },
+  "osl_mismatch_count": {
+    "unit": "requests",
+    "avg": 72
+  },
+  "error_summary": [],
+  "was_cancelled": false,
+  "input_config": {
+    "models": {
+      "items": [
+        {
+          "name": "qwen-27b-fp8"
+        }
+      ]
+    },
+    "endpoint": {
+      "type": "chat",
+      "streaming": true,
+      "connection_reuse": "never",
+      "extra": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    },
+    "datasets": [
+      {
+        "name": "main",
+        "type": "synthetic",
+        "prompts": {
+          "isl": {
+            "mean": 512
+          },
+          "osl": {
+            "mean": 128
+          }
+        },
+        "prefix_prompts": {
+          "pool_size": 1,
+          "length": 4096
+        }
+      }
+    ],
+    "phases": [
+      {
+        "name": "profiling",
+        "type": "constant",
+        "requests": 100,
+        "concurrency": 8,
+        "rate": 1
+      }
+    ]
+  }
+}

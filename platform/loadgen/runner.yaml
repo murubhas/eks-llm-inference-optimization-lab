@@ -1,0 +1,65 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: aiperf-runner
+  namespace: model-serving
+  labels:
+    app: aiperf-runner
+    app.kubernetes.io/name: aiperf-runner
+    app.kubernetes.io/component: load-generator
+spec:
+  restartPolicy: Never
+  containers:
+    - name: aiperf-runner
+      image: python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -lc
+      args:
+        - |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends tar
+          rm -rf /var/lib/apt/lists/*
+          python -m venv /opt/aiperf
+          /opt/aiperf/bin/pip install --no-cache-dir "aiperf==${AIPERF_VERSION}"
+          exec sleep infinity
+      env:
+        - name: AIPERF_VERSION
+          value: "0.10.0"
+        - name: AIPERF_URL
+          value: http://llm-gpu-vllm-baseline.model-serving.svc
+        - name: AIPERF_MODEL
+          value: REPLACE_WITH_SERVED_MODEL_ID
+        - name: CONNECTION_REUSE_STRATEGY
+          value: never
+      resources:
+        requests:
+          cpu: 250m
+          memory: 512Mi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+      readinessProbe:
+        exec:
+          command:
+            - /bin/sh
+            - -c
+            - test -x /opt/aiperf/bin/aiperf && command -v tar >/dev/null
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 120
+      volumeMounts:
+        - name: runner-files
+          mountPath: /workshop
+          readOnly: true
+        - name: artifacts
+          mountPath: /artifacts
+  volumes:
+    - name: runner-files
+      configMap:
+        name: aiperf-runner-files
+        defaultMode: 365
+    - name: artifacts
+      emptyDir: {}

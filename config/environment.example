@@ -1,0 +1,25 @@
+# Copy this file to config/environment.local and replace every placeholder.
+# Never commit environment.local.
+
+export AWS_PROFILE="your-aws-profile"
+export AWS_REGION="us-east-2"
+
+export SERVE_CONTEXT="arn:aws:eks:REGION:ACCOUNT_ID:cluster/serve-cluster"
+export SERVE_NAMESPACE="model-serving"
+export OBSERVABILITY_NAMESPACE="observability"
+
+export ECR_REGISTRY="ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com"
+export MODEL_ID="your-model-id"
+export MODEL_STORAGE_PATH="your-model-storage-path"
+export MODEL_PVC="your-model-pvc"
+export MODEL_SERVICE_ACCOUNT="your-model-service-account"
+export VLLM_IMAGE="your-registry/vllm-openai:tested-version"
+export GPU_INSTANCE_TYPE="g6e.12xlarge"
+export GPU_WORKLOAD_LABEL="your-gpu-workload-label"
+export AIPERF_URL="http://llm-gpu-vllm-baseline.model-serving.svc"
+
+# Absolute path to the cloned repository.
+export LAB_ROOT="/absolute/path/to/eks-llm-inference-optimization-lab"
+
+# Hourly price used by economics dashboards. Verify for your region and terms.
+export GPU_INSTANCE_HOURLY_USD="0.00"

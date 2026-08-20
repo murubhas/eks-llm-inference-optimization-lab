@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runtime-b-trtllm-options
+  namespace: model-serving
+  labels:
+    experiment: runtime-comparison
+data:
+  llm_api_options.yaml: |
+    return_perf_metrics: true
+    enable_iter_perf_stats: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-b-trtllm
+  namespace: model-serving
+  labels:
+    app: runtime-b-trtllm
+    experiment: runtime-comparison
+spec:
+  replicas: 1
+  progressDeadlineSeconds: 7200
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: runtime-b-trtllm
+  template:
+    metadata:
+      labels:
+        app: runtime-b-trtllm
+        experiment: runtime-comparison
+        runtime: tensorrt-llm
+    spec:
+      hostIPC: true
+      serviceAccountName: model-artifact-reader
+      nodeSelector:
+        node.kubernetes.io/instance-type: p5.48xlarge
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: runtime-a-vllm
+              topologyKey: kubernetes.io/hostname
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: trtllm
+          image: nvcr.io/nvidia/tensorrt-llm/release@sha256:16a103b8b1b682d287e8043fc674d23fa52d5b5f2127da913bf6c0643db3a073
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/bash
+            - -lc
+          args:
+            - |
+              set -euo pipefail
+              python3 - <<'PY'
+              import tensorrt_llm
+              import torch
+
+              print("TensorRT-LLM version:", tensorrt_llm.__version__)
+              print("PyTorch version:", torch.__version__)
+              print("CUDA runtime:", torch.version.cuda)
+              print("GPU:", torch.cuda.get_device_name(0))
+              PY
+              exec trtllm-serve serve \
+                /models/qwen3.6-27b-bf16 \
+                --tp_size 1 \
+                --host 0.0.0.0 \
+                --port 8000 \
+                --backend pytorch \
+                --kv_cache_free_gpu_memory_fraction 0.80 \
+                --max_seq_len 8192 \
+                --max_num_tokens 8192 \
+                --max_batch_size 8 \
+                --trust_remote_code \
+                --config /etc/trtllm/llm_api_options.yaml
+          env:
+            - name: HF_HOME
+              value: /tmp/huggingface
+            - name: TRTLLM_NO_USAGE_STATS
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 720
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "8"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
+            limits:
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: model-storage
+              mountPath: /models
+              readOnly: true
+            - name: trtllm-options
+              mountPath: /etc/trtllm
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: model-storage
+        - name: trtllm-options
+          configMap:
+            name: runtime-b-trtllm-options
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime-b-trtllm
+  namespace: model-serving
+  labels:
+    app: runtime-b-trtllm
+    experiment: runtime-comparison
+spec:
+  selector:
+    app: runtime-b-trtllm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: runtime-b-trtllm
+  namespace: model-serving
+  labels:
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - model-serving
+  selector:
+    matchLabels:
+      app: runtime-b-trtllm
+  endpoints:
+    - port: http
+      path: /prometheus/metrics
+      interval: 15s
